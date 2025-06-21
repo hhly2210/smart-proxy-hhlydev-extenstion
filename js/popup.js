@@ -54,6 +54,31 @@ document.addEventListener("DOMContentLoaded", function () {
     updateProxyTypeFields();
   });
 
+  // Add event listener for proxy type changes to show MTProto warning
+  proxyType.addEventListener("change", function () {
+    const diagInfo = document.getElementById("diagInfo");
+
+    if (this.value === "mtproto") {
+      // Show warning about MTProto limitations
+      if (diagInfo) {
+        diagInfo.textContent =
+          "Note: Browsers have limited support for MTProto. For Telegram Web, SOCKS5 may work better.";
+        diagInfo.style.color = "#744";
+      }
+
+      // Show info notification
+      showNotification(
+        "Browser limitations may prevent MTProto proxies from working with Telegram web. Consider using SOCKS5 instead.",
+        "info",
+        8000
+      );
+    } else if (diagInfo && diagInfo.textContent.includes("MTProto")) {
+      // Reset diagnostic info if it was showing the MTProto warning
+      diagInfo.textContent = "Click to run proxy diagnostics for Telegram";
+      diagInfo.style.color = "";
+    }
+  });
+
   proxyType.addEventListener("change", updateProxyTypeFields);
   saveButton.addEventListener("click", saveSettings);
 
@@ -595,5 +620,274 @@ document.addEventListener("DOMContentLoaded", function () {
   } // Use the utility function instead
   function showSavedMessage(message = "Settings saved!", type = "success") {
     return showNotification(message, type);
+  }
+
+  // Add handler for diagnostics button
+  const diagButton = document.getElementById("diagButton");
+  if (diagButton) {
+    diagButton.addEventListener("click", async function () {
+      // Show that diagnostics are running
+      const diagInfo = document.getElementById("diagInfo");
+      if (diagInfo) {
+        diagInfo.textContent = "Running diagnostics...";
+        diagInfo.style.color = "#437";
+      }
+
+      try {
+        // Run diagnostics in background script
+        const response = await sendMessage({ action: "runDiagnostics" });
+
+        if (response && response.success) {
+          if (diagInfo) {
+            diagInfo.textContent =
+              "Diagnostics complete! Check background console (F12) for details.";
+            diagInfo.style.color = "green";
+          }
+          showNotification(
+            "Diagnostics complete! Check console for details.",
+            "success",
+            5000
+          );
+        } else {
+          if (diagInfo) {
+            diagInfo.textContent =
+              "Diagnostics failed. Check console for errors.";
+            diagInfo.style.color = "red";
+          }
+          showNotification(
+            "Diagnostics failed: " + (response.error || "Unknown error"),
+            "error"
+          );
+        }
+      } catch (error) {
+        console.error("Error running diagnostics:", error);
+        if (diagInfo) {
+          diagInfo.textContent =
+            "Error running diagnostics: " + (error.message || "Unknown error");
+          diagInfo.style.color = "red";
+        }
+        showNotification(
+          "Error: " + (error.message || "Failed to run diagnostics"),
+          "error"
+        );
+      }
+    });
+  }
+
+  // Add handler for Telegram proxy reload button
+  const reloadTelegramButton = document.getElementById("reloadTelegramButton");
+  if (reloadTelegramButton) {
+    reloadTelegramButton.addEventListener("click", async function () {
+      // Update button UI
+      reloadTelegramButton.disabled = true;
+      reloadTelegramButton.textContent = "Reloading...";
+
+      // Update info text
+      const diagInfo = document.getElementById("diagInfo");
+      if (diagInfo) {
+        diagInfo.textContent = "Reloading Telegram proxy settings...";
+        diagInfo.style.color = "#174";
+      }
+
+      try {
+        // Call background script to reload Telegram proxy
+        const response = await sendMessage({ action: "reloadTelegramProxy" });
+
+        if (response && response.success) {
+          if (diagInfo) {
+            diagInfo.textContent = "Telegram proxy reloaded successfully!";
+            diagInfo.style.color = "green";
+          }
+          showNotification(
+            "Telegram proxy reloaded. Please refresh Telegram web page.",
+            "success",
+            5000
+          );
+
+          // Test connectivity
+          setTimeout(() => {
+            sendMessage({ action: "testTelegramConnectivity" });
+          }, 2000);
+        } else {
+          if (diagInfo) {
+            diagInfo.textContent = "Failed to reload Telegram proxy.";
+            diagInfo.style.color = "red";
+          }
+          showNotification(
+            "Failed to reload Telegram proxy: " +
+              (response.error || "No MTProto rules found"),
+            "error"
+          );
+        }
+      } catch (error) {
+        console.error("Error reloading Telegram proxy:", error);
+        if (diagInfo) {
+          diagInfo.textContent = "Error: " + (error.message || "Unknown error");
+          diagInfo.style.color = "red";
+        }
+        showNotification(
+          "Error: " + (error.message || "Failed to reload Telegram proxy"),
+          "error"
+        );
+      } finally {
+        // Reset button state
+        reloadTelegramButton.disabled = false;
+        reloadTelegramButton.textContent = "Reload Telegram Proxy";
+      }
+    });
+  }
+
+  // Add handler for MTProto support check button
+  const checkMTProtoButton = document.getElementById("checkMTProtoButton");
+  if (checkMTProtoButton) {
+    checkMTProtoButton.addEventListener("click", async function () {
+      // Update button UI
+      checkMTProtoButton.disabled = true;
+      checkMTProtoButton.textContent = "Checking...";
+
+      // Update info text
+      const diagInfo = document.getElementById("diagInfo");
+      if (diagInfo) {
+        diagInfo.textContent = "Checking MTProto proxy compatibility...";
+        diagInfo.style.color = "#744";
+      }
+
+      try {
+        // Call background script to check MTProto support
+        const response = await sendMessage({
+          action: "diagnoseMTProtoSupport",
+        });
+
+        if (response && response.success && response.data) {
+          const data = response.data;
+
+          // Create a more detailed report in a modal
+          const modal = document.createElement("div");
+          modal.style.position = "fixed";
+          modal.style.top = "50%";
+          modal.style.left = "50%";
+          modal.style.transform = "translate(-50%, -50%)";
+          modal.style.zIndex = "1000";
+          modal.style.backgroundColor = "white";
+          modal.style.padding = "20px";
+          modal.style.borderRadius = "8px";
+          modal.style.boxShadow = "0 0 10px rgba(0,0,0,0.5)";
+          modal.style.maxWidth = "400px";
+          modal.style.maxHeight = "80vh";
+          modal.style.overflow = "auto";
+
+          const closeBtn = document.createElement("button");
+          closeBtn.textContent = "Close";
+          closeBtn.style.marginTop = "15px";
+          closeBtn.style.padding = "5px 10px";
+          closeBtn.style.float = "right";
+          closeBtn.onclick = function () {
+            document.body.removeChild(modal);
+            document.body.removeChild(overlay);
+          };
+
+          const overlay = document.createElement("div");
+          overlay.style.position = "fixed";
+          overlay.style.top = "0";
+          overlay.style.left = "0";
+          overlay.style.width = "100%";
+          overlay.style.height = "100%";
+          overlay.style.backgroundColor = "rgba(0,0,0,0.5)";
+          overlay.style.zIndex = "999";
+
+          // Format the report content
+          let reportContent = `
+            <h2>MTProto Support Diagnostics</h2>
+            <h3>Browser Information</h3>
+            <p><strong>User Agent:</strong> ${data.browserInfo}</p>
+            <p><strong>Chrome Version:</strong> ${data.chromeVersion}</p>
+            
+            <h3>Proxy Configuration</h3>
+            <p><strong>Current Mode:</strong> ${
+              data.currentConfig || "None"
+            }</p>
+            <p><strong>PAC Script:</strong> ${data.pacScriptStatus || "N/A"}</p>
+            <p><strong>MTProto Active:</strong> ${
+              data.mtprotoActive ? "Yes" : "No"
+            }</p>
+            
+            <h3>MTProto Details</h3>
+          `;
+
+          if (data.mtprotoDetails) {
+            reportContent += `
+              <p><strong>Server:</strong> ${data.mtprotoDetails.server}:${
+              data.mtprotoDetails.port
+            }</p>
+              <p><strong>Secret Key:</strong> ${
+                data.mtprotoDetails.secretProvided ? "Provided" : "Missing"
+              }</p>
+              <p><strong>Last Activated:</strong> ${
+                data.mtprotoDetails.lastActivated
+              }</p>
+            `;
+          } else {
+            reportContent += `<p>No MTProto proxy has been activated yet.</p>`;
+          }
+
+          reportContent += `
+            <h3>Telegram Rules</h3>
+            ${
+              data.telegramRules.length > 0
+                ? data.telegramRules
+                    .map(
+                      (rule) =>
+                        `<p><strong>${rule.pattern}</strong> → ${rule.type}</p>`
+                    )
+                    .join("")
+                : "<p>No Telegram-specific rules found.</p>"
+            }
+            
+            <h3>PAC Script</h3>
+            <p>Telegram matches in PAC script: ${
+              data.telegramPacMatches || "Not found"
+            }</p>
+            
+            <h3>Browser Limitations</h3>
+            <p>${data.recommendation}</p>
+            
+            <h3>Recommendation</h3>
+            <p>If you need to use MTProto proxies with Telegram web, consider:</p>
+            <ol>
+              <li>Using a regular SOCKS5 proxy instead that's compatible with Telegram</li>
+              <li>Using the Telegram desktop app which has native MTProto support</li>
+              <li>Setting up a local proxy service that can translate between SOCKS5 and MTProto protocols</li>
+            </ol>
+          `;
+
+          modal.innerHTML = reportContent;
+          modal.appendChild(closeBtn);
+
+          document.body.appendChild(overlay);
+          document.body.appendChild(modal);
+
+          if (diagInfo) {
+            diagInfo.textContent = "MTProto check complete - see report";
+            diagInfo.style.color = "green";
+          }
+        } else {
+          if (diagInfo) {
+            diagInfo.textContent =
+              "MTProto check failed: " + (response.error || "Unknown error");
+            diagInfo.style.color = "red";
+          }
+        }
+      } catch (error) {
+        console.error("Error checking MTProto support:", error);
+        if (diagInfo) {
+          diagInfo.textContent = "Error: " + (error.message || "Unknown error");
+          diagInfo.style.color = "red";
+        }
+      } finally {
+        // Reset button state
+        checkMTProtoButton.disabled = false;
+        checkMTProtoButton.textContent = "Check MTProto Support";
+      }
+    });
   }
 });

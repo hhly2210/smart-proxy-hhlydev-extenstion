@@ -10,6 +10,11 @@ chrome.runtime.onInstalled.addListener(function () {
 chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
   console.log("Received message with action:", request.action);
 
+  // Log source of message if available
+  if (sender && sender.tab) {
+    console.log("Message from tab:", sender.tab.url);
+  }
+
   // Keep track of whether we've responded yet
   let hasResponded = false;
 
@@ -98,6 +103,59 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
         safeResponse(false, error);
       });
 
+    return true;
+  }
+  if (request.action === "runDiagnostics") {
+    runProxyDiagnostics()
+      .then(() => safeResponse(true))
+      .catch((error) => {
+        console.error("Error in runDiagnostics:", error);
+        safeResponse(false, error);
+      });
+
+    return true;
+  }
+  if (request.action === "reloadTelegramProxy") {
+    reloadTelegramProxySettings()
+      .then((result) => safeResponse(result))
+      .catch((error) => {
+        console.error("Error in reloadTelegramProxy:", error);
+        safeResponse(false, error);
+      });
+
+    return true;
+  }
+  if (request.action === "testTelegramConnectivity") {
+    testTelegramConnectivity();
+    sendResponse({ success: true });
+    return false;
+  }
+  if (request.action === "diagnoseMTProtoSupport") {
+    diagnosticMTProtoSupport()
+      .then((result) => {
+        sendResponse({ success: true, data: result });
+      })
+      .catch((error) => {
+        console.error("Error in diagnoseMTProtoSupport:", error);
+        sendResponse({
+          success: false,
+          error: error.message || "Unknown error",
+        });
+      });
+    return true;
+  }
+  if (request.action === "convertMTProtoToSOCKS5") {
+    convertMTProtoToSOCKS5()
+      .then((result) => {
+        sendResponse({ success: true, data: result });
+      })
+      .catch((error) => {
+        console.error("Error converting MTProto to SOCKS5:", error);
+        sendResponse({
+          success: false,
+          error: error.message || "Unknown error",
+        });
+      });
     return true;
   }
 });
@@ -231,13 +289,29 @@ async function applyProxySettings(settings) {
     if (settings.mtprotoSecret) {
       console.log("Setting up MTProto proxy with secret key for Telegram");
 
+      // Ensure the secret key is properly formatted
+      let secretKey = settings.mtprotoSecret.trim();
+
+      // Remove any 'dd' prefix if present (some MTProto configurations use this)
+      if (secretKey.startsWith("dd")) {
+        secretKey = secretKey.substring(2);
+      }
+
+      // Ensure it's using the proper format (hexadecimal)
+      if (!/^[0-9a-fA-F]+$/.test(secretKey)) {
+        console.warn(
+          "MTProto secret key appears to be in non-hexadecimal format"
+        );
+      }
+
       // Store MTProto settings
       chrome.storage.local.set({
         mtprotoActive: true,
         mtprotoDetails: {
           server: settings.server,
           port: settings.port,
-          secret: settings.mtprotoSecret,
+          secret: secretKey,
+          timestamp: Date.now(), // Add timestamp for debugging
         },
       });
 
@@ -245,6 +319,14 @@ async function applyProxySettings(settings) {
       setupTelegramDomainRules(settings);
 
       console.log("MTProto proxy settings saved with secret key");
+
+      // Log success notification
+      chrome.notifications.create({
+        type: "basic",
+        iconUrl: "icons/notification_icon.png",
+        title: "Smart Proxy Switcher",
+        message: "MTProto proxy configured for Telegram",
+      });
     }
   }
 
@@ -420,13 +502,57 @@ async function generateAndApplyPacFile() {
     // Output simple log without special characters
     // console.log("PAC script evaluating proxy for: " + url + " (host: " + host + ")");
     
+    // Extract hostname from URL if needed
+    function extractHostname(url) {
+      // Already a hostname without protocol
+      if (!url.includes('://')) return url;
+      
+      // Remove protocol
+      let hostname = url.split('://')[1];
+      
+      // Remove path, query, etc.
+      hostname = hostname.split('/')[0].split('?')[0].split('#')[0];
+      
+      // Remove port if present
+      if (hostname.includes(':')) {
+        hostname = hostname.split(':')[0];
+      }
+      
+      return hostname;
+    }
+    
+    // When host parameter is actually a full URL, extract the hostname
+    if (host.includes('://')) {
+      host = extractHostname(host);
+    }
+    
     // Helper function to check if a host matches a pattern
-    function hostMatchesPattern(host, pattern) {
+    function hostMatchesPattern(host, patternStr) {
+      if (!patternStr) return false;
+      
+      // Handle multiple patterns separated by semicolons
+      if (patternStr.includes(';')) {
+        const patterns = patternStr.split(';').map(p => p.trim()).filter(p => p.length > 0);
+        return patterns.some(pattern => checkSinglePattern(host, pattern));
+      }
+      
+      // Regular single pattern
+      return checkSinglePattern(host, patternStr);
+    }
+    
+    // Check if host matches a single pattern
+    function checkSinglePattern(host, pattern) {
+      // Empty pattern check
+      if (!pattern) return false;
+      
       // Handle wildcard patterns (*.domain.tld)
       if (pattern.startsWith("*.")) {
         const domainPart = pattern.substring(2);
         return host === domainPart || host.endsWith("." + domainPart);
       }
+      
+      // Exact match check
+      if (host === pattern) return true;
       
       // Convert wildcards to regex safely
       var regexText = pattern.replace(/\\./g, "\\\\.").replace(/\\*/g, ".*");
@@ -453,21 +579,50 @@ async function generateAndApplyPacFile() {
         proxyString = "DIRECT";
       } else if (tabRule.proxyType.toLowerCase() === "mtproto") {
         // Handle MTProto specifically for Telegram
-        // MTProto uses SOCKS5 underneath
+        // MTProto is not natively supported by browsers, so using SOCKS5 as transport
+        console.log("Converting MTProto to SOCKS5 for browser compatibility");
         proxyString = `SOCKS5 ${tabRule.server}:${tabRule.port}`;
 
-        // Special handling for Telegram domains with MTProto
+        // Save information about the conversion for diagnostics
+        chrome.storage.local.set({
+          mtprotoConverted: true,
+          mtprotoConversionNote:
+            "MTProto was converted to SOCKS5 at " + new Date().toISOString(),
+        });
+
         const isTelegramPattern =
           tabRule.pattern.includes("telegram.org") ||
           tabRule.pattern.includes("t.me");
 
         if (isTelegramPattern) {
-          // Use a special rule for Telegram domains
+          // Force setting mtprotoActive flag for Telegram domains in tabs
+          chrome.storage.local.set({
+            mtprotoActive: true,
+            mtprotoDetails: {
+              server: tabRule.server,
+              port: tabRule.port,
+              secret: tabRule.mtprotoSecret || "",
+              timestamp: Date.now(),
+              source: "tab_rule",
+            },
+          });
+
+          // Use a more comprehensive rule for Telegram domains with exact host matches too
           pacScript += `
-    // Telegram tab rule
-    if (host === "${tabRule.pattern}" || 
-        host === "web.telegram.org" || 
-        host.endsWith(".t.me")) {
+    // Telegram tab rule - handles all Telegram domains
+    if (host === "web.telegram.org" ||
+        host === "telegram.org" ||
+        host.endsWith(".telegram.org") ||
+        host === "t.me" ||
+        host.endsWith(".t.me") ||
+        hostMatchesPattern(host, "*.telegram.org") || 
+        hostMatchesPattern(host, "telegram.org") || 
+        hostMatchesPattern(host, "web.telegram.org") || 
+        hostMatchesPattern(host, "*.t.me") || 
+        hostMatchesPattern(host, "t.me")) {
+      if (typeof console !== 'undefined') {
+        console.log("MTProto proxy applied for Telegram tab: " + host);
+      }
       return "${proxyString}";
     }`;
           return; // Skip the standard rule
@@ -492,14 +647,12 @@ async function generateAndApplyPacFile() {
         ) {
           proxyString = `SOCKS ${tabRule.server}:${tabRule.port}`;
         }
-      }
-
-      // Add tab rule to PAC script - ASCII ONLY, no console.log
+      } // Add tab rule to PAC script - ASCII ONLY, no console.log
       if (proxyString) {
         pacScript += `
     
     // Tab rule
-    if (host === "${tabRule.pattern}") {
+    if (hostMatchesPattern(host, "${tabRule.pattern}")) {
       return "${proxyString}";
     }`;
       }
@@ -521,22 +674,54 @@ async function generateAndApplyPacFile() {
     if (rule.proxyType.toLowerCase() === "direct") {
       proxyString = "DIRECT";
     } else if (rule.proxyType.toLowerCase() === "mtproto") {
-      // MTProto uses SOCKS5 underneath
+      // MTProto is not directly supported by browsers, using SOCKS5 as transport
+      console.log(
+        "Domain rule: Converting MTProto to SOCKS5 for browser compatibility"
+      );
       proxyString = `SOCKS5 ${rule.server}:${rule.port}`;
 
-      // Handle special case for Telegram domains with MTProto
+      // Save information about the conversion for diagnostics
+      chrome.storage.local.set({
+        mtprotoConverted: true,
+        mtprotoConversionNote:
+          "MTProto domain rule was converted to SOCKS5 at " +
+          new Date().toISOString(),
+      });
+
       const isTelegramPattern =
         rule.pattern.includes("telegram.org") || rule.pattern.includes("t.me");
 
       if (isTelegramPattern) {
-        // Add special case for telegram domains - ASCII ONLY, no console.log
+        console.log("Setting up MTProto proxy for Telegram domains");
+        // Force setting mtprotoActive flag for Telegram domains
+        chrome.storage.local.set({
+          mtprotoActive: true,
+          mtprotoDetails: {
+            server: rule.server,
+            port: rule.port,
+            secret: rule.mtprotoSecret || "",
+            timestamp: Date.now(),
+          },
+        });
+
+        // Enhanced Telegram domain handling with more explicit rules and debug info
         pacScript += `
-    // Telegram MTProto rule
+    // Telegram MTProto rule - comprehensive matching for all Telegram domains
     if (hostMatchesPattern(host, "${rule.pattern}") || 
-        host === "telegram.org" || 
+        hostMatchesPattern(host, "*.telegram.org") ||
+        hostMatchesPattern(host, "telegram.org") || 
+        hostMatchesPattern(host, "web.telegram.org") || 
+        host === "web.telegram.org" ||
+        host === "telegram.org" ||
         host.endsWith(".telegram.org") ||
+        hostMatchesPattern(host, "*.t.me") ||
+        hostMatchesPattern(host, "t.me") ||
         host === "t.me" ||
         host.endsWith(".t.me")) {
+      // Debug info within PAC script
+      if (typeof console !== 'undefined') {
+        console.log("MTProto proxy applied for Telegram domain: " + host);
+      }
       return "${proxyString}";
     }`;
         return; // Skip the standard rule for Telegram domains
@@ -574,9 +759,19 @@ async function generateAndApplyPacFile() {
   if (settings.enabled && !useDirectByDefault) {
     // Only use configured proxy as default if direct connection isn't forced
     let defaultProxyString;
-
     if (settings.proxyType.toLowerCase() === "mtproto") {
+      console.log(
+        "Default proxy: Converting MTProto to SOCKS5 for browser compatibility"
+      );
       defaultProxyString = `SOCKS5 ${settings.server}:${settings.port}`;
+
+      // Save information about the conversion
+      chrome.storage.local.set({
+        mtprotoConverted: true,
+        mtprotoConversionNote:
+          "Default MTProto was converted to SOCKS5 at " +
+          new Date().toISOString(),
+      });
     } else if (
       settings.proxyType.toLowerCase() === "http" ||
       settings.proxyType.toLowerCase() === "https"
@@ -874,6 +1069,15 @@ chrome.proxy.onProxyError.addListener(function (details) {
 async function updateOptionsSettings(settings) {
   // Store settings
   await chrome.storage.sync.set(settings);
+  // Check if we need to handle MTProto settings specially
+  const needsMTProtoActivation =
+    settings.mtprotoEnabled === true ||
+    (settings.domainRules &&
+      settings.domainRules.some(
+        (rule) =>
+          rule.proxyType === "mtproto" &&
+          (rule.pattern.includes("telegram") || rule.pattern.includes("t.me"))
+      ));
 
   // Apply settings
   if (settings.useCustomPac) {
@@ -882,6 +1086,38 @@ async function updateOptionsSettings(settings) {
   } else {
     // Apply normal settings
     await loadAndApplySettings();
+  }
+
+  // Ensure MTProto is activated if needed
+  if (needsMTProtoActivation) {
+    // Get current domain rules to find MTProto config
+    const mtprotoRules = await getStorageData({ domainRules: [] });
+    const telegramRule =
+      mtprotoRules.domainRules &&
+      mtprotoRules.domainRules.find(
+        (rule) =>
+          rule.proxyType === "mtproto" &&
+          (rule.pattern.includes("telegram") || rule.pattern.includes("t.me"))
+      );
+
+    if (telegramRule) {
+      console.log("Found MTProto rule, ensuring it's active");
+
+      // Ensure MTProto proxy is active
+      chrome.storage.local.set({
+        mtprotoActive: true,
+        mtprotoDetails: {
+          server: telegramRule.server,
+          port: telegramRule.port,
+          secret: telegramRule.mtprotoSecret || "",
+          timestamp: Date.now(),
+          source: "options_activation",
+        },
+      });
+
+      // Apply PAC file specifically
+      await generateAndApplyPacFile();
+    }
   }
 
   // Handle WebRTC blocking if enabled
@@ -904,6 +1140,30 @@ async function updateOptionsSettings(settings) {
 // Apply custom PAC script
 async function applyCustomPacScript(script) {
   try {
+    // Check for non-ASCII characters that could cause Chrome to reject the PAC script
+    const hasNonAscii = /[^\x00-\x7F]/.test(script);
+    if (hasNonAscii) {
+      console.warn(
+        "PAC script contains non-ASCII characters. Removing them..."
+      );
+      script = script.replace(/[^\x00-\x7F]/g, "");
+    }
+
+    // Add safeguards for error handling within the PAC script
+    if (!script.includes("try {") && !script.includes("catch(")) {
+      // Wrap the core PAC logic in try-catch to prevent total failure
+      const scriptParts = script.split("function FindProxyForURL(url, host)");
+      if (scriptParts.length > 1) {
+        script =
+          scriptParts[0] +
+          "function FindProxyForURL(url, host) {\n  try {" +
+          scriptParts[1].replace(
+            /}(\s*)$/,
+            '  } catch(e) {\n    console.error("PAC script error:", e);\n    return "DIRECT";\n  }\n}'
+          );
+      }
+    }
+
     await chrome.proxy.settings.set({
       value: {
         mode: "pac_script",
@@ -914,9 +1174,21 @@ async function applyCustomPacScript(script) {
       scope: "regular",
     });
 
-    console.log("Custom PAC script applied");
+    console.log("Custom PAC script applied successfully");
   } catch (error) {
     console.error("Error applying custom PAC script:", error);
+
+    // Fallback to direct connection
+    try {
+      await chrome.proxy.settings.set({
+        value: { mode: "direct" },
+        scope: "regular",
+      });
+      console.log("Fallback to direct connection due to PAC script error");
+    } catch (fallbackError) {
+      console.error("Error setting fallback direct connection:", fallbackError);
+    }
+
     throw error;
   }
 }
@@ -964,37 +1236,922 @@ async function setupTelegramDomainRules(settings) {
     domainRules = domainRules.filter(
       (rule) =>
         !(rule.pattern.includes("telegram") || rule.pattern.includes("t.me"))
+    ); // All Telegram domains in one comprehensive pattern
+    // This pattern will be split by semicolons and processed individually in PAC script
+    const telegramPattern =
+      "*.telegram.org; telegram.org; web.telegram.org; k.telegram.org; core.telegram.org; api.telegram.org; *.t.me; t.me";
+
+    console.log(
+      "Setting up MTProto proxy for all Telegram domains with pattern: " +
+        telegramPattern
     );
 
-    // Add rules for common Telegram domains
-    const telegramDomains = [
-      "*.telegram.org",
-      "telegram.org",
-      "web.telegram.org",
-      "*.t.me",
-      "t.me",
-    ];
-
-    // Add each domain as a separate rule
-    telegramDomains.forEach((domain) => {
-      domainRules.push({
-        pattern: domain,
-        proxyType: "mtproto",
-        server: settings.server,
-        port: settings.port,
-        username: "",
-        password: "",
-        mtprotoSecret: settings.mtprotoSecret,
-      });
+    // Add one rule that covers all Telegram domains
+    domainRules.push({
+      pattern: telegramPattern,
+      proxyType: "mtproto",
+      server: settings.server,
+      port: settings.port,
+      username: "",
+      password: "",
+      mtprotoSecret: settings.mtprotoSecret,
     });
 
     // Save the updated rules
     await chrome.storage.sync.set({ domainRules });
     console.log("Added automatic rules for Telegram domains");
 
+    // Apply the updated rules immediately
+    await generateAndApplyPacFile();
+
+    // Notify about updated Telegram settings
+    chrome.notifications.create({
+      type: "basic",
+      iconUrl: "icons/notification_icon.png",
+      title: "Smart Proxy Switcher",
+      message: "MTProto proxy configured for Telegram domains",
+    });
+  } catch (error) {
+    console.error("Error setting up Telegram domain rules:", error);
+  }
+}
+
+// Helper function to process multi-domain patterns (separated by semicolons)
+function processDomainPatterns(pattern, handler) {
+  if (!pattern) return;
+
+  if (pattern.includes(";")) {
+    // Handle multiple patterns separated by semicolons
+    const patterns = pattern
+      .split(";")
+      .map((p) => p.trim())
+      .filter((p) => p.length > 0); // Filter out empty patterns
+
+    console.log(
+      `Processing multiple domain patterns (${patterns.length}): ${pattern}`
+    );
+
+    // Process each pattern individually
+    patterns.forEach((singlePattern) => {
+      if (singlePattern.length > 0) {
+        handler(singlePattern);
+      }
+    });
+  } else {
+    // Handle single pattern
+    console.log(`Processing single domain pattern: ${pattern}`);
+    handler(pattern);
+  }
+}
+
+// Test function to verify domain pattern handling with Telegram domains
+function testTelegramProxyHandling() {
+  console.log("=== Testing Telegram Domain Handling ===");
+
+  // Example Telegram domains
+  const telegramDomains = [
+    "telegram.org",
+    "web.telegram.org",
+    "core.telegram.org",
+    "api.telegram.org",
+    "desktop.telegram.org",
+    "t.me",
+    "tx.me",
+  ];
+
+  // Function similar to the one used in PAC script to test matching
+  function hostMatchesPattern(host, patternStr) {
+    // Handle multiple patterns separated by semicolons
+    if (patternStr.includes(";")) {
+      const patterns = patternStr
+        .split(";")
+        .map((p) => p.trim())
+        .filter((p) => p.length > 0);
+      return patterns.some((pattern) => checkSinglePattern(host, pattern));
+    }
+
+    // Regular single pattern
+    return checkSinglePattern(host, patternStr);
+  }
+
+  function checkSinglePattern(host, pattern) {
+    if (!pattern) return false;
+
+    // Handle wildcard patterns (*.domain.tld)
+    if (pattern.startsWith("*.")) {
+      const domainPart = pattern.substring(2);
+      return host === domainPart || host.endsWith("." + domainPart);
+    }
+
+    // Exact match check
+    if (host === pattern) return true;
+
+    // Convert wildcards to regex safely
+    const regexText = pattern.replace(/\./g, "\\.").replace(/\*/g, ".*");
+    const regex = new RegExp("^" + regexText + "$");
+    return regex.test(host);
+  }
+
+  // Test pattern matching
+  const testPattern =
+    "*.telegram.org; telegram.org; web.telegram.org; *.t.me; t.me";
+  console.log("Testing pattern:", testPattern);
+
+  telegramDomains.forEach((domain) => {
+    const matches = hostMatchesPattern(domain, testPattern);
+    console.log(
+      `Domain "${domain}" ${matches ? "MATCHES" : "DOES NOT MATCH"} pattern`
+    );
+  });
+
+  console.log("=== Test Complete ===");
+}
+
+// Call test function on extension startup
+(async function () {
+  // Small delay to ensure extension is fully loaded
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  testTelegramProxyHandling();
+})();
+
+// Listen for web requests to Telegram domains to validate proxy usage
+chrome.webRequest.onBeforeRequest.addListener(
+  function (details) {
+    // Check if this is a Telegram domain
+    const url = new URL(details.url);
+    const host = url.hostname;
+
+    if (host.includes("telegram") || host.includes("t.me")) {
+      console.log(`Detected request to Telegram domain: ${host}`);
+
+      // Check if we have an MTProto proxy configured and ensure it's active
+      chrome.storage.local.get(
+        ["mtprotoActive", "mtprotoDetails"],
+        function (result) {
+          if (result.mtprotoActive) {
+            console.log(
+              `MTProto proxy is active for this Telegram request to ${host}`,
+              result.mtprotoDetails
+            );
+          } else {
+            console.log(
+              `No MTProto proxy active for Telegram request to ${host}, checking for rules`
+            );
+
+            // Try to find and activate MTProto rules
+            chrome.storage.sync.get({ domainRules: [] }, function (data) {
+              const telegramRules = data.domainRules.filter(
+                (rule) =>
+                  rule.proxyType === "mtproto" &&
+                  (rule.pattern.includes("telegram") ||
+                    rule.pattern.includes("t.me"))
+              );
+
+              if (telegramRules.length > 0) {
+                const rule = telegramRules[0];
+                console.log(
+                  "Found MTProto rule for Telegram, activating:",
+                  rule
+                );
+
+                // Activate MTProto proxy
+                chrome.storage.local.set(
+                  {
+                    mtprotoActive: true,
+                    mtprotoDetails: {
+                      server: rule.server,
+                      port: rule.port,
+                      secret: rule.mtprotoSecret || "",
+                      timestamp: Date.now(),
+                      source: "web_request_activation",
+                    },
+                  },
+                  function () {
+                    console.log("MTProto proxy activated from web request");
+
+                    // Force regenerate and apply PAC file
+                    generateAndApplyPacFile().catch((err) =>
+                      console.error(
+                        "Error regenerating PAC file from web request:",
+                        err
+                      )
+                    );
+                  }
+                );
+              } else {
+                console.log("No MTProto rules found for Telegram domains");
+              }
+            });
+          }
+        }
+      );
+    }
+
+    // This is just logging, don't block or modify the request
+    return { cancel: false };
+  },
+  // Filter for Telegram domains
+  {
+    urls: [
+      "*://*.telegram.org/*",
+      "*://telegram.org/*",
+      "*://*.t.me/*",
+      "*://t.me/*",
+    ],
+  },
+  // No extra info needed
+  []
+);
+
+// Add diagnostic tool to help users troubleshoot connection issues
+async function runProxyDiagnostics() {
+  console.log("=== Running Proxy Diagnostics ===");
+
+  try {
+    // Check current proxy settings
+    const proxySettings = await chrome.proxy.settings.get({});
+    console.log("Current proxy settings:", proxySettings);
+
+    // Display PAC data if it's being used
+    if (
+      proxySettings &&
+      proxySettings.value &&
+      proxySettings.value.mode === "pac_script"
+    ) {
+      console.log(
+        "Using PAC script mode - this is correct for domain/tab rules"
+      );
+      // We can't directly access the PAC script content due to security restrictions
+    }
+
+    // Check if we have MTProto settings
+    const mtprotoData = await new Promise((resolve) => {
+      chrome.storage.local.get(["mtprotoActive", "mtprotoDetails"], resolve);
+    });
+
+    // Force activate MTProto for Telegram if needed
+    let needsReload = false;
+
+    // Load domain rules to check for Telegram configuration
+    const domainData = await new Promise((resolve) => {
+      chrome.storage.sync.get({ domainRules: [] }, resolve);
+    });
+
+    const telegramRules = domainData.domainRules.filter(
+      (rule) =>
+        rule.pattern.includes("telegram") || rule.pattern.includes("t.me")
+    );
+
+    if (telegramRules.length > 0) {
+      // We have Telegram rules, ensure MTProto is active
+      console.log("Found Telegram domain rules:", telegramRules);
+
+      const telegramRule = telegramRules[0]; // Use first rule we find
+
+      if (!mtprotoData.mtprotoActive) {
+        console.log("MTProto proxy was NOT active, activating now");
+
+        // Activate MTProto proxy for Telegram
+        chrome.storage.local.set({
+          mtprotoActive: true,
+          mtprotoDetails: {
+            server: telegramRule.server,
+            port: telegramRule.port,
+            secret: telegramRule.mtprotoSecret || "",
+            timestamp: Date.now(),
+            source: "diagnostics_activation",
+          },
+        });
+
+        needsReload = true;
+      } else {
+        console.log(
+          "MTProto proxy is ACTIVE with details:",
+          mtprotoData.mtprotoDetails
+        );
+      }
+    } else {
+      if (mtprotoData.mtprotoActive) {
+        console.log(
+          "MTProto proxy is ACTIVE with details but no Telegram rules found:",
+          mtprotoData.mtprotoDetails
+        );
+      } else {
+        console.log("MTProto proxy is NOT active and no Telegram rules found");
+      }
+    }
+
+    // Check tab-specific rules
+    const tabData = await new Promise((resolve) => {
+      chrome.storage.local.get({ tabPatterns: [] }, resolve);
+    });
+
+    const telegramTabRules = tabData.tabPatterns.filter(
+      (rule) =>
+        rule.pattern.includes("telegram") || rule.pattern.includes("t.me")
+    );
+
+    if (telegramTabRules.length > 0) {
+      console.log("Found Telegram tab rules:", telegramTabRules);
+    } // Test domain pattern matching for key Telegram domains
+    console.log("Testing pattern matching for Telegram domains:");
+
+    // Make sure telegramRules exists before using it
+    if (telegramRules && telegramRules.length > 0) {
+      ["web.telegram.org", "t.me", "api.telegram.org"].forEach((domain) => {
+        console.log(`Testing domain: ${domain}`);
+
+        // Using same matching logic as in PAC script
+        telegramRules.forEach((rule) => {
+          // Use the same function as in the PAC script for consistency
+          function hostMatchesPattern(host, patternStr) {
+            // Handle multiple patterns separated by semicolons
+            if (patternStr && patternStr.includes(";")) {
+              const patterns = patternStr
+                .split(";")
+                .map((p) => p.trim())
+                .filter((p) => p.length > 0);
+              return patterns.some((pattern) =>
+                checkSinglePattern(host, pattern)
+              );
+            }
+
+            // Regular single pattern
+            return checkSinglePattern(host, patternStr);
+          }
+
+          function checkSinglePattern(host, pattern) {
+            if (!pattern) return false;
+
+            // Handle wildcard patterns (*.domain.tld)
+            if (pattern.startsWith("*.")) {
+              const domainPart = pattern.substring(2);
+              return host === domainPart || host.endsWith("." + domainPart);
+            }
+
+            // Exact match check
+            if (host === pattern) return true;
+
+            // Convert wildcards to regex safely
+            const regexText = pattern
+              .replace(/\./g, "\\.")
+              .replace(/\*/g, ".*");
+            const regex = new RegExp("^" + regexText + "$");
+            return regex.test(host);
+          }
+
+          const matches = hostMatchesPattern(domain, rule.pattern);
+
+          console.log(
+            `  Rule pattern "${rule.pattern}" ${
+              matches ? "MATCHES" : "DOES NOT MATCH"
+            } domain`
+          );
+        });
+      });
+    } else {
+      console.log("No Telegram rules found to test domain patterns against");
+    }
+
+    // Check if we need to refresh PAC file
+    if (needsReload) {
+      console.log("Regenerating PAC file after MTProto activation");
+      await generateAndApplyPacFile();
+
+      // Test Telegram connectivity
+      setTimeout(testTelegramConnectivity, 1000);
+    }
+
+    console.log("=== Diagnostics Complete ===");
+  } catch (error) {
+    console.error("Error in proxy diagnostics:", error);
+  }
+}
+
+// Run diagnostics on demand via message
+chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
+  if (request.action === "runDiagnostics") {
+    runProxyDiagnostics()
+      .then(() => {
+        sendResponse({ success: true });
+      })
+      .catch((error) => {
+        sendResponse({ success: false, error: error.message });
+      });
+    return true; // Keep message channel open for async response
+  }
+});
+
+// Function to test connectivity to Telegram domains
+function testTelegramConnectivity() {
+  console.log("=== Testing Telegram Connectivity ===");
+  const telegramUrls = [
+    "https://web.telegram.org/k/",
+    "https://telegram.org/",
+    "https://api.telegram.org/",
+  ];
+
+  // First, check if MTProto is actually active
+  chrome.storage.local.get(
+    ["mtprotoActive", "mtprotoDetails"],
+    function (data) {
+      console.log(
+        "MTProto status:",
+        data.mtprotoActive ? "Active" : "Inactive"
+      );
+      if (data.mtprotoDetails) {
+        console.log("MTProto details:", {
+          server: data.mtprotoDetails.server,
+          port: data.mtprotoDetails.port,
+          secretLength: data.mtprotoDetails.secret
+            ? data.mtprotoDetails.secret.length
+            : 0,
+          lastActivated: new Date(data.mtprotoDetails.timestamp),
+        });
+      }
+    }
+  );
+
+  // Check current proxy settings
+  chrome.proxy.settings.get({}, function (config) {
+    console.log("Current proxy configuration:", JSON.stringify(config));
+  });
+
+  // Log active proxy settings to console
+  console.log("Attempting to debug proxy configuration:");
+  try {
+    chrome.webRequest.onBeforeRequest.addListener(
+      function (details) {
+        // Only log for Telegram domains
+        if (details.url.includes("telegram.org")) {
+          console.log(`Telegram Request: ${details.url}`);
+          console.log(`Request details:`, {
+            method: details.method,
+            type: details.type,
+            fromCache: details.fromCache,
+            statusCode: details.statusCode,
+            timeStamp: new Date(details.timeStamp),
+          });
+          return { cancel: false };
+        }
+      },
+      { urls: ["*://*.telegram.org/*"] },
+      ["requestBody"]
+    );
+
+    chrome.webRequest.onCompleted.addListener(
+      function (details) {
+        if (details.url.includes("telegram.org")) {
+          console.log(`Telegram Response: ${details.url}`);
+          console.log(`Response status: ${details.statusCode}`);
+        }
+      },
+      { urls: ["*://*.telegram.org/*"] }
+    );
+
+    chrome.webRequest.onErrorOccurred.addListener(
+      function (details) {
+        if (details.url.includes("telegram.org")) {
+          console.log(`Telegram Error: ${details.url}`);
+          console.log(`Error: ${details.error}`);
+        }
+      },
+      { urls: ["*://*.telegram.org/*"] }
+    );
+  } catch (error) {
+    console.error("Error setting up webRequest listeners:", error);
+  }
+
+  // Legacy fetch test
+  telegramUrls.forEach((url) => {
+    console.log(`Testing connection to ${url}`);
+    fetch(url, {
+      method: "HEAD",
+      headers: { "Cache-Control": "no-cache" },
+      mode: "no-cors", // This is important for cross-origin requests to not fail
+    })
+      .then((response) => {
+        console.log(`Connection to ${url} successful!`);
+      })
+      .catch((error) => {
+        console.error(`Failed to fetch ${url}:`, error);
+      });
+  });
+
+  console.log("=== Connectivity Test Initiated ===");
+}
+
+// Function to reload proxy settings for Telegram
+async function reloadTelegramProxySettings() {
+  console.log("=== Reloading Telegram Proxy Settings ===");
+
+  try {
+    // Get domain rules
+    const domainData = await getStorageData({ domainRules: [] });
+
+    // Find Telegram rules (check for both MTProto and SOCKS5)
+    const telegramRules = domainData.domainRules.filter(
+      (rule) =>
+        (rule.proxyType === "mtproto" || rule.proxyType === "socks5") &&
+        (rule.pattern.includes("telegram") || rule.pattern.includes("t.me"))
+    );
+
+    if (telegramRules.length > 0) {
+      const rule = telegramRules[0];
+      console.log("Found proxy rule for Telegram, reactivating:", rule);
+
+      // Ensure proxy is properly configured
+      if (rule.server && rule.port) {
+        if (rule.proxyType === "mtproto") {
+          // Format secret key properly if present
+          let secretKey = rule.mtprotoSecret || "";
+          if (secretKey.startsWith("dd")) {
+            secretKey = secretKey.substring(2);
+          }
+
+          // Activate MTProto proxy
+          await new Promise((resolve) => {
+            chrome.storage.local.set(
+              {
+                mtprotoActive: true,
+                mtprotoDetails: {
+                  server: rule.server,
+                  port: rule.port,
+                  secret: secretKey,
+                  timestamp: Date.now(),
+                  source: "reload_function",
+                },
+              },
+              resolve
+            );
+          });
+
+          console.log("MTProto proxy reactivated");
+
+          // Add browser compatibility warning
+          chrome.notifications.create({
+            type: "basic",
+            iconUrl: "icons/notification_icon.png",
+            title: "MTProto Proxy Warning",
+            message:
+              "Browser limitations may prevent MTProto proxies from working with Telegram web. Consider using SOCKS5 instead.",
+          });
+        } else {
+          // For SOCKS5, just log it
+          console.log("SOCKS5 proxy for Telegram reactivated");
+
+          // Clear MTProto settings to avoid confusion
+          await new Promise((resolve) => {
+            chrome.storage.local.set({ mtprotoActive: false }, resolve);
+          });
+        }
+
+        // Regenerate PAC file with forced Telegram rules
+        await generateAndApplyPacFile();
+
+        console.log("PAC file regenerated with Telegram rules");
+
+        // Show notification
+        chrome.notifications.create({
+          type: "basic",
+          iconUrl: "icons/notification_icon.png",
+          title: "Smart Proxy Switcher",
+          message: "Telegram proxy settings reloaded and applied",
+        });
+
+        // Test connectivity after a short delay
+        setTimeout(() => {
+          testTelegramConnectivity();
+          addTelegramRulesIfMissing(); // Ensure we have rules for all Telegram domains
+        }, 2000);
+
+        return true;
+      } else {
+        console.error("Invalid proxy configuration for Telegram");
+        return false;
+      }
+    } else {
+      console.log("No Telegram proxy rules found");
+
+      // Suggest creating a SOCKS5 rule for Telegram
+      chrome.notifications.create({
+        type: "basic",
+        iconUrl: "icons/notification_icon.png",
+        title: "Telegram Proxy Setup",
+        message:
+          "No proxy rules found for Telegram. Consider adding a SOCKS5 rule for better browser compatibility.",
+      });
+
+      return false;
+    }
+  } catch (error) {
+    console.error("Error reloading Telegram proxy settings:", error);
+    return false;
+  }
+}
+
+// Function to diagnose MTProto proxy support and limitations
+chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
+  if (request.action === "diagnoseMTProtoSupport") {
+    diagnosticMTProtoSupport()
+      .then((result) => {
+        sendResponse({ success: true, data: result });
+      })
+      .catch((error) => {
+        console.error("Error in diagnoseMTProtoSupport:", error);
+        sendResponse({
+          success: false,
+          error: error.message || "Unknown error",
+        });
+      });
+    return true;
+  }
+});
+
+// Function to diagnose MTProto support status
+async function diagnosticMTProtoSupport() {
+  console.log("=== Diagnosing MTProto Support ===");
+
+  const result = {
+    browserInfo: navigator.userAgent,
+    chromeVersion:
+      /Chrome\/([0-9.]+)/.exec(navigator.userAgent)?.[1] || "unknown",
+    proxySupport: {
+      mtproto: false,
+      socks5: true,
+      http: true,
+      https: true,
+    },
+    mtprotoActive: false,
+    currentConfig: null,
+    pacScriptStatus: null,
+    telegramRules: [],
+    recommendation: "",
+  };
+
+  // Check MTProto active status
+  try {
+    const data = await getStorageData({
+      mtprotoActive: false,
+      mtprotoDetails: null,
+    });
+    result.mtprotoActive = data.mtprotoActive || false;
+    result.mtprotoDetails = data.mtprotoDetails
+      ? {
+          server: data.mtprotoDetails.server,
+          port: data.mtprotoDetails.port,
+          secretProvided: !!data.mtprotoDetails.secret,
+          lastActivated: new Date(data.mtprotoDetails.timestamp).toISOString(),
+        }
+      : null;
+  } catch (error) {
+    console.error("Error checking MTProto status:", error);
+  }
+
+  // Get current proxy config
+  try {
+    const config = await new Promise((resolve) => {
+      chrome.proxy.settings.get({}, resolve);
+    });
+    result.currentConfig = config.value.mode;
+
+    if (config.value.mode === "pac_script") {
+      result.pacScriptStatus = config.value.pacScript ? "Present" : "Missing";
+      // Extract portion of PAC script dealing with Telegram
+      if (config.value.pacScript && config.value.pacScript.data) {
+        const pacData = config.value.pacScript.data;
+        const telegramMatches = pacData.match(/telegram\.org|t\.me/g);
+        result.telegramPacMatches = telegramMatches
+          ? telegramMatches.length
+          : 0;
+      }
+    }
+  } catch (error) {
+    console.error("Error getting proxy config:", error);
+  }
+
+  // Get domain rules for Telegram
+  try {
+    const domainData = await getStorageData({ domainRules: [] });
+    result.telegramRules = domainData.domainRules
+      .filter(
+        (rule) =>
+          rule.pattern.includes("telegram") || rule.pattern.includes("t.me")
+      )
+      .map((rule) => ({
+        pattern: rule.pattern,
+        type: rule.proxyType,
+      }));
+  } catch (error) {
+    console.error("Error getting domain rules:", error);
+  }
+
+  // Browser limitations
+  result.recommendation =
+    "Chrome and other browsers don't natively support MTProto protocol for website " +
+    "connections. While we're using SOCKS5 as a transport in the PAC script, the MTProto protocol itself " +
+    "requires special handling that browsers don't provide. For Telegram Web, you may need to use " +
+    "a regular SOCKS5 proxy instead that's compatible with MTProto, or use the Telegram desktop app " +
+    "which supports MTProto proxies directly.";
+
+  console.log("Diagnostic result:", result);
+  return result;
+}
+
+// Helper function to ensure all Telegram domains are covered with the correct proxy type
+async function addTelegramRulesIfMissing() {
+  try {
+    console.log("Checking for complete Telegram domain coverage");
+
+    // Get current domain rules
+    const domainData = await getStorageData({ domainRules: [] });
+
+    // Check if we have any rules for Telegram domains
+    const telegramRules = domainData.domainRules.filter(
+      (rule) =>
+        rule.pattern.includes("telegram") || rule.pattern.includes("t.me")
+    );
+
+    if (telegramRules.length === 0) {
+      console.log("No Telegram rules found, will not add any");
+      return;
+    }
+
+    // Use the first found Telegram rule as a template
+    const templateRule = telegramRules[0];
+
+    // Comprehensive list of Telegram domains
+    const allTelegramDomains = [
+      "*.telegram.org",
+      "telegram.org",
+      "*.t.me",
+      "t.me",
+      "*.telesco.pe",
+      "telesco.pe",
+      "*.tdesktop.com",
+      "tdesktop.com",
+    ];
+
+    // Create a pattern string with all domains
+    const fullPattern = allTelegramDomains.join("; ");
+
+    // Check if we already have a rule with this complete pattern
+    const hasCompleteRule = telegramRules.some(
+      (rule) =>
+        rule.pattern.split(";").length >= allTelegramDomains.length ||
+        rule.pattern === fullPattern
+    );
+
+    if (hasCompleteRule) {
+      console.log("Complete Telegram domain coverage already exists");
+      return;
+    }
+
+    console.log("Creating comprehensive Telegram domain rule");
+
+    // Create a new comprehensive rule based on the template
+    const newRule = {
+      pattern: fullPattern,
+      proxyType:
+        templateRule.proxyType === "mtproto"
+          ? "socks5"
+          : templateRule.proxyType, // Prefer SOCKS5 over MTProto
+      server: templateRule.server,
+      port: templateRule.port,
+      username: templateRule.username || "",
+      password: templateRule.password || "",
+    };
+
+    // If the original was MTProto, but we're switching to SOCKS5, show a notification
+    if (templateRule.proxyType === "mtproto") {
+      chrome.notifications.create({
+        type: "basic",
+        iconUrl: "icons/notification_icon.png",
+        title: "Proxy Type Changed",
+        message:
+          "Switched from MTProto to SOCKS5 for better browser compatibility with Telegram web.",
+      });
+
+      console.log("Switched from MTProto to SOCKS5 for better compatibility");
+    }
+
+    // Remove old Telegram rules and add the comprehensive one
+    const updatedRules = domainData.domainRules.filter(
+      (rule) =>
+        !(rule.pattern.includes("telegram") || rule.pattern.includes("t.me"))
+    );
+    updatedRules.push(newRule);
+
+    // Save updated rules
+    await new Promise((resolve) => {
+      chrome.storage.sync.set({ domainRules: updatedRules }, resolve);
+    });
+
+    console.log("Updated domain rules with comprehensive Telegram coverage");
+
     // Apply the updated rules
     await generateAndApplyPacFile();
   } catch (error) {
-    console.error("Error setting up Telegram domain rules:", error);
+    console.error("Error updating Telegram rules:", error);
+  }
+}
+
+// Handle message to convert MTProto rules to SOCKS5
+chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
+  if (request.action === "convertMTProtoToSOCKS5") {
+    convertMTProtoToSOCKS5()
+      .then((result) => {
+        sendResponse({ success: true, data: result });
+      })
+      .catch((error) => {
+        console.error("Error converting MTProto to SOCKS5:", error);
+        sendResponse({
+          success: false,
+          error: error.message || "Unknown error",
+        });
+      });
+    return true;
+  }
+});
+
+// Function to convert MTProto rules to SOCKS5 for better compatibility
+async function convertMTProtoToSOCKS5() {
+  console.log("=== Converting MTProto rules to SOCKS5 ===");
+
+  try {
+    // Get current domain rules
+    const domainData = await getStorageData({ domainRules: [] });
+
+    // Check for MTProto rules
+    const mtprotoRules = domainData.domainRules.filter(
+      (rule) => rule.proxyType === "mtproto"
+    );
+
+    if (mtprotoRules.length === 0) {
+      console.log("No MTProto rules found to convert");
+      return { converted: 0, message: "No MTProto rules found" };
+    }
+
+    console.log(`Found ${mtprotoRules.length} MTProto rules to convert`);
+
+    // Convert MTProto rules to SOCKS5
+    const updatedRules = domainData.domainRules.map((rule) => {
+      if (rule.proxyType === "mtproto") {
+        // Create a copy with SOCKS5 instead of MTProto
+        return {
+          ...rule,
+          proxyType: "socks5",
+          // Add note that this was converted from MTProto
+          notes: `Converted from MTProto on ${new Date().toISOString()}`,
+        };
+      }
+      return rule;
+    });
+
+    // Save updated rules
+    await new Promise((resolve) => {
+      chrome.storage.sync.set({ domainRules: updatedRules }, resolve);
+    });
+
+    console.log(
+      `Successfully converted ${mtprotoRules.length} MTProto rules to SOCKS5`
+    );
+
+    // Also check general settings for MTProto
+    const settings = await getStorageData({
+      enabled: false,
+      proxyType: "http",
+    });
+
+    let generalUpdated = false;
+
+    if (settings.proxyType === "mtproto") {
+      // Update general settings to use SOCKS5 instead
+      settings.proxyType = "socks5";
+
+      await new Promise((resolve) => {
+        chrome.storage.sync.set(settings, resolve);
+      });
+
+      generalUpdated = true;
+      console.log("Updated general settings from MTProto to SOCKS5");
+    }
+
+    // Regenerate PAC script with updated rules
+    await generateAndApplyPacFile();
+
+    // Clear MTProto active flag
+    await new Promise((resolve) => {
+      chrome.storage.local.set({ mtprotoActive: false }, resolve);
+    });
+
+    return {
+      converted: mtprotoRules.length,
+      generalUpdated,
+      message: `Successfully converted ${mtprotoRules.length} rules to SOCKS5 for better browser compatibility`,
+    };
+  } catch (error) {
+    console.error("Error converting MTProto to SOCKS5:", error);
+    throw error;
   }
 }

@@ -148,12 +148,23 @@
                 <!-- Active tabs will be listed here -->
                 <p>Loading tabs...</p>
             </div>
-
             <div class="button-container">
                 <button id="refreshTabsButton">Refresh Tabs</button>
                 <button id="saveTabRulesButton">Save Tab Rules</button>
             </div>
         </div>
+        <div class="diagnostics-container" style="margin-top: 10px; padding: 10px; text-align: center;">
+            <button id="diagButton" style="background-color: #437; color: white;">Run Diagnostics</button>
+            <button id="reloadTelegramButton" style="background-color: #174; color: white; margin-left: 10px;">Reload
+                Telegram Proxy</button>
+            <button id="checkMTProtoButton" style="background-color: #744; color: white; margin-left: 10px;">Check
+                MTProto
+                Support</button>
+            <div id="diagInfo" style="font-style: italic; font-size: 0.9em; margin-top: 5px;">
+                Click to run proxy diagnostics for Telegram
+            </div>
+        </div>
+
         </div>
 
         <script src="js/popup.js"></script>
