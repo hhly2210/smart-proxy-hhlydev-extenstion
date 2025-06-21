@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html>
+
+    <head>
+        <title>Smart Proxy Switcher - Options</title>
+        <meta charset="utf-8">
+        <link rel="stylesheet" href="css/options.css">
+    </head>
+
+    <body>
+        <div class="container">
+            <header>
+                <h1>Smart Proxy Switcher - Advanced Options</h1>
+            </header>
+
+            <div class="options-section">
+                <h2>General Settings</h2>
+
+                <div class="option-group">
+                    <label for="startupBehavior">Startup Behavior:</label>
+                    <select id="startupBehavior">
+                        <option value="remember">Remember last state</option>
+                        <option value="enabled">Always enabled</option>
+                        <option value="disabled">Always disabled</option>
+                    </select>
+                </div>
+
+                <div class="option-group">
+                    <label class="checkbox-container">
+                        <input type="checkbox" id="showNotifications">
+                        <span class="checkmark"></span>
+                        Show notifications when proxy status changes
+                    </label>
+                </div>
+
+                <div class="option-group">
+                    <label class="checkbox-container">
+                        <input type="checkbox" id="autoReconnect">
+                        <span class="checkmark"></span>
+                        Auto-reconnect if proxy connection fails
+                    </label>
+                </div>
+            </div>
+
+            <div class="options-section">
+                <h2>Advanced Proxy Settings</h2>
+
+                <div class="option-group">
+                    <label class="checkbox-container">
+                        <input type="checkbox" id="useCustomPac">
+                        <span class="checkmark"></span>
+                        Use custom PAC script
+                    </label>
+                </div>
+
+                <div class="custom-pac-container" id="customPacContainer" style="display: none;">
+                    <p>Define your own Proxy Auto-Configuration (PAC) script:</p>
+                    <textarea id="customPacScript" rows="10"></textarea>
+                    <p class="hint">For help with PAC scripts, see the <a
+                            href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Proxy_servers_and_tunneling/Proxy_Auto-Configuration_PAC_file"
+                            target="_blank">MDN Documentation</a></p>
+                </div>
+
+                <div class="option-group">
+                    <label class="checkbox-container">
+                        <input type="checkbox" id="blockWebRTC">
+                        <span class="checkmark"></span>
+                        Block WebRTC to prevent IP leaks
+                    </label>
+                </div>
+            </div>
+
+            <div class="options-section">
+                <h2>Import/Export Settings</h2>
+                <div class="button-group">
+                    <button id="exportButton">Export Configuration</button>
+                    <button id="importButton">Import Configuration</button>
+                    <input type="file" id="importFile" accept=".json" style="display: none;">
+                </div>
+            </div>
+
+            <div class="options-section">
+                <h2>Reset Extension</h2>
+                <div class="button-group">
+                    <button id="resetButton" class="danger">Reset All Settings</button>
+                </div>
+                <p class="warning">Warning: This will erase all your settings and proxy configurations.</p>
+            </div>
+
+            <div id="statusMessage" class="status-message"></div>
+
+            <div class="button-group save-buttons">
+                <button id="saveButton" class="primary">Save Options</button>
+            </div>
+        </div>
+
+        <script src="js/options.js"></script>
+    </body>
+
+</html>

@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html>
+
+    <head>
+        <title>Smart Proxy</title>
+        <meta charset="utf-8">
+        <link rel="stylesheet" href="css/popup.css">
+        <script src="js/util.js"></script>
+    </head>
+
+    <body>
+        <div class="container">
+            <h1>Smart Proxy</h1>
+
+            <div class="toggle-container">
+                <label class="switch">
+                    <input type="checkbox" id="proxyToggle">
+                    <span class="slider round"></span>
+                </label>
+                <span class="toggle-label">Enable Proxy</span>
+            </div>
+
+            <div class="tab-container">
+                <div class="tabs">
+                    <button class="tab-btn active" data-tab="general">General</button>
+                    <button class="tab-btn" data-tab="domains">Domains</button>
+                    <button class="tab-btn" data-tab="tabs">Tabs</button>
+                </div>
+            </div>
+
+            <div class="proxy-config" id="general-tab">
+                <div class="form-group">
+                    <label for="proxyType">Proxy Type:</label>
+                    <select id="proxyType">
+                        <option value="http">HTTP</option>
+                        <option value="https">HTTPS</option>
+                        <option value="socks4">SOCKS4</option>
+                        <option value="socks5">SOCKS5</option>
+                        <option value="mtproto">MTProto</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="proxyServer">Server:</label>
+                    <input type="text" id="proxyServer" placeholder="proxy.example.com">
+                </div>
+
+                <div class="form-group">
+                    <label for="proxyPort">Port:</label>
+                    <input type="number" id="proxyPort" placeholder="8080">
+                </div>
+                <div class="form-group mtproto-options" id="mtprotoOptions" style="display: none;">
+                    <label for="mtprotoSecret">Secret Key:</label>
+                    <input type="text" id="mtprotoSecret" placeholder="Enter MTProto secret key">
+                </div>
+
+                <div class="auth-container" id="authContainer">
+                    <div class="form-group">
+                        <label for="username">Username:</label>
+                        <input type="text" id="username">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="password">Password:</label>
+                        <input type="password" id="password">
+                    </div>
+                </div>
+            </div>
+            <div class="bypass-list">
+                <h2>Bypass List</h2>
+                <textarea id="bypassList"
+                    placeholder="Enter domains to bypass proxy, one per line. e.g.: google.com, example.org"></textarea>
+            </div>
+
+            <div class="button-container">
+                <button id="saveButton">Save Settings</button>
+            </div>
+        </div>
+
+        <div class="proxy-config" id="domains-tab" style="display: none;">
+            <h2>Domain-specific Proxies</h2>
+            <p>Configure different proxies for different domains</p>
+
+            <div id="domain-rules-container">
+                <!-- Domain rules will be added here dynamically -->
+            </div>
+
+            <div class="domain-rule-form">
+                <div class="form-group">
+                    <label for="domainPattern">Domain Pattern:</label>
+                    <input type="text" id="domainPattern" placeholder="*.example.com">
+                </div>
+
+                <div class="form-group">
+                    <label for="domainProxyType">Proxy Type:</label>
+                    <select id="domainProxyType">
+                        <option value="http">HTTP</option>
+                        <option value="https">HTTPS</option>
+                        <option value="socks4">SOCKS4</option>
+                        <option value="socks5">SOCKS5</option>
+                        <option value="mtproto">MTProto</option>
+                        <option value="direct">DIRECT</option>
+                    </select>
+                </div>
+
+                <div class="form-group domain-proxy-server">
+                    <label for="domainProxyServer">Server:</label>
+                    <input type="text" id="domainProxyServer" placeholder="proxy.example.com">
+                </div>
+
+                <div class="form-group domain-proxy-port">
+                    <label for="domainProxyPort">Port:</label>
+                    <input type="number" id="domainProxyPort" placeholder="8080">
+                </div>
+
+                <div class="form-group domain-mtproto-options" id="domainMtprotoOptions" style="display: none;">
+                    <label for="domainMtprotoSecret">Secret Key:</label>
+                    <input type="text" id="domainMtprotoSecret" placeholder="Enter MTProto secret key">
+                </div>
+
+                <div class="domain-auth-container">
+                    <div class="form-group">
+                        <label for="domainUsername">Username:</label>
+                        <input type="text" id="domainUsername">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="domainPassword">Password:</label>
+                        <input type="password" id="domainPassword">
+                    </div>
+                </div>
+
+                <div class="button-container">
+                    <button id="addDomainRuleButton">Add Rule</button>
+                </div>
+            </div>
+
+            <div class="button-container">
+                <button id="saveDomainRulesButton">Save All Rules</button>
+            </div>
+        </div>
+
+        <div class="proxy-config" id="tabs-tab" style="display: none;">
+            <h2>Tab-specific Proxies</h2>
+            <p>Configure proxies for specific tabs</p>
+
+            <div id="active-tabs-container">
+                <!-- Active tabs will be listed here -->
+                <p>Loading tabs...</p>
+            </div>
+
+            <div class="button-container">
+                <button id="refreshTabsButton">Refresh Tabs</button>
+                <button id="saveTabRulesButton">Save Tab Rules</button>
+            </div>
+        </div>
+        </div>
+
+        <script src="js/popup.js"></script>
+    </body>
+
+</html>
